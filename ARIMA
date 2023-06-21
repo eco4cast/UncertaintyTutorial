@@ -35,7 +35,65 @@ model_types = c("terrestrial","aquatics","phenology","beetles","ticks") #Replace
 
 
 #### Step 2: Get NOAA driver data
-# Skipping this for arima model
+forecast_date <- Sys.Date()
+noaa_date <- Sys.Date() - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
+
+#We're going to get data for all sites relevant to this model, so as to not have to re-load data for the same sites
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") %>%
+  filter(if_any(matches(model_types),~.==1))
+all_sites = site_data$field_site_id
+
+# specify meteorological variables needed to make predictions
+variables <- c('air_temperature',
+"surface_downwelling_longwave_flux_in_air",
+"surface_downwelling_shortwave_flux_in_air",
+"precipitation_flux",
+"air_pressure",
+"relative_humidity",
+"air_temperature",
+"northward_wind",
+"eastward_wind")
+
+# Load stage 2 data
+endpoint = "data.ecoforecast.org"
+use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage2/parquet/0/", noaa_date)
+use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
+noaa_future <- arrow::open_dataset(use_s3) |>
+  dplyr::collect() |>
+  dplyr::filter(site_id %in% all_sites,
+                datetime >= forecast_date,
+                variable == variables) 
+
+# Format met forecasts
+noaa_future_daily <- noaa_future |> 
+  mutate(datetime = lubridate::as_date(datetime)) |> 
+  # mean daily forecasts at each site per ensemble
+  group_by(datetime, site_id, parameter, variable) |> 
+  summarize(prediction = mean(prediction)) |>
+  pivot_wider(names_from = variable, values_from = prediction) |>
+  # convert to Celsius
+  mutate(air_temperature = air_temperature - 273.15) |> 
+  select(datetime, site_id, all_of(variables), parameter)
+
+#### Step 3.0: Define the forecasts model for a site
+forecast_site <- function(site,noaa_future_daily,target_variable) {
+  message(paste0("Running site: ", site))
+  
+  
+  # Get site information for elevation
+  site_info <- site_data |> dplyr::filter(field_site_id == site)
+  
+  mod_file <- list.files(here("Forecast_submissions/Generate_forecasts/tg_randfor/trained_models/"), pattern = paste(theme, site, target_variable, sep = "-"))
+  
+  if(!file.exists(here(paste0("Forecast_submissions/Generate_forecasts/tg_randfor/trained_models/",mod_file)))){
+    message(paste0("No trained model for site ",site,". Skipping forecasts at this site."))
+    return()
+    
+} else {
+
+    #  Get 30-day predicted temperature ensemble at the site
+    noaa_future <- noaa_future_daily%>%
+      filter(site_id == site)
 
 #### Step 3.0: Define the forecast model for a site
 forecast_site <- function(site, target_variable, horiz,step) {
