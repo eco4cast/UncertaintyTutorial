@@ -40,6 +40,24 @@ site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4ca
 all_sites = site_data$field_site_id
 
 
+load_stage2 <- function(site, endpoint, variables){
+  message('run ', site)
+  use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage3/parquet/", site)
+  use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
+  parquet_file <- arrow::open_dataset(use_s3) |>
+    dplyr::collect() |>
+    dplyr::filter(datetime >= lubridate::ymd('2017-01-01'),
+                  variable %in% variables)|> #It would be more efficient to filter before collecting, but this is not running on my M1 mac
+    na.omit() |> 
+    mutate(datetime = lubridate::as_date(datetime)) |> 
+    group_by(datetime, site_id, variable) |> 
+    summarize(prediction = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
+    pivot_wider(names_from = variable, values_from = prediction) |> 
+    # convert air temp to C
+    mutate(air_temperature = air_temperature - 273.15)
+}
+
+
 # Specify desired met variables - all meteo
 variables <- c('air_temperature',
                "surface_downwelling_longwave_flux_in_air",
@@ -59,7 +77,7 @@ use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage2/parquet/0/", noaa_d
 
 
 
-load_stage3 <- function(site,endpoint,variables){
+load_stage3 <- function(site, endpoint, variables){
   message('run ', site)
   use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage3/parquet/", site)
   use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
@@ -69,7 +87,7 @@ load_stage3 <- function(site,endpoint,variables){
                   variable %in% variables)|> #It would be more efficient to filter before collecting, but this is not running on my M1 mac
     na.omit() |> 
     mutate(datetime = lubridate::as_date(datetime)) |> 
-    group_by(datetime, site_id, variable) |> 
+    group_by(datetime, site_id, variable, parameter) |> 
     summarize(prediction = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
     pivot_wider(names_from = variable, values_from = prediction) |> 
     # convert air temp to C
@@ -78,9 +96,10 @@ load_stage3 <- function(site,endpoint,variables){
 
 
 if(file.exists(here("Forecast_submissions/Generate_forecasts/noaa_downloads/past_allmeteo.csv"))) {
-  noaa_past_mean <- read_csv(here("Forecast_submissions/Generate_forecasts/noaa_downloads/past_allmeteo.csv"))
+  noaa_past <- read_csv(here("Forecast_submissions/Generate_forecasts/noaa_downloads/past_allmeteo.csv"))
 } else {
-  noaa_past_mean <- map_dfr(all_sites, load_stage3,endpoint,variables)
+  noaa_past <- map_dfr(all_sites, load_stage2, endpoint,variables)
+  noaa_future <- map_dfr(all_sites, load_stage3, endpoint,variables)
 }
 
 
@@ -89,7 +108,7 @@ if(file.exists(here("Forecast_submissions/Generate_forecasts/noaa_downloads/past
 
 ##### Training function ##########
 
-train_site <- function(sites, noaa_past_mean, target_variable) {
+train_site <- function(sites, noaa_past, target_variable) {
   message(paste0("Running ",target_variable," at all sites"))
   
   
@@ -99,7 +118,7 @@ train_site <- function(sites, noaa_past_mean, target_variable) {
     dplyr::filter(variable %in% c(target_variable), 
                   site_id %in% sites) |>
     tidyr::pivot_wider(names_from = "variable", values_from = "observation") |>
-    dplyr::left_join(noaa_past_mean%>%
+    dplyr::left_join(noaa_past%>%
                        filter(site_id %in% sites), by = c("datetime", "site_id"))|>
     drop_na() #removes non-complete cases - BEWARE
   
@@ -222,7 +241,7 @@ for (theme in model_themes) {
   
   
   mod_summaries <- map(vars, possibly(
-    ~train_site(sites = sites, target_variable = ., noaa_past_mean = noaa_past_mean), 
+    ~train_site(sites = sites, target_variable = ., noaa_past = noaa_past), 
     otherwise = tibble(mtry = NA_real_)))|> #possibly only accepts static values so can't map '.x' into site or target_variable
     compact()|>
     list_rbind()|>
@@ -238,6 +257,6 @@ mod_sums_all <- syms(apropos("_mod_summaries"))|>
   write_csv(here(paste0("trained_models/rf/model_training_summaries-", Sys.Date(),".csv")))
 
 readRDS("trained_models/rf/phenology-gcc_90-trained-2023-06-21.Rds") -> gcc_model
-predict(gcc_model$object$fit$fit$object, noaa_past_mean, type = "raw") -> outputs
-predict(gcc_model$object$fit$fit$object, noaa_past_mean, type = "conf_int") -> outputs_unc
-predict(gcc_model$object$fit$fit$object, noaa_past_mean, type = "numeric") -> outputs_numeric
+predict(gcc_model$object$fit$fit$object, noaa_future, type = "raw") -> outputs
+predict(gcc_model$object$fit$fit$object, noaa_future, type = "conf_int") -> outputs_unc
+predict(gcc_model$object$fit$fit$object, noaa_future, type = "numeric") -> outputs_numeric
