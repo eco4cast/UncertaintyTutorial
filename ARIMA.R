@@ -88,7 +88,7 @@ noaa_future_daily <- noaa_future |>
 ## grab past met data
 met = neon4cast::noaa_stage3() |>
   filter(site_id == "HARV",variable %in% variables,datetime < forecast_date) |>
-  collect
+  collect()
 met_daily = met |>
   mutate(datetime = lubridate::as_date(datetime)) |> 
   # mean daily forecasts at each site per ensemble
@@ -102,7 +102,7 @@ met_daily = met |>
 #### Step 3.0: Define the forecasts model for a site
 site = "HARV"
 target_variable = "gcc_90"
-forecast_site <- function(site, target_variable, horiz,step) {
+#forecast_site <- function(site, target_variable, horiz,step) {
   
   message(paste0("Running site: ", site))
   
@@ -116,33 +116,33 @@ forecast_site <- function(site, target_variable, horiz,step) {
                   site_id == site) |> 
     tidyr::pivot_wider(names_from = "variable", values_from = "observation")
   
-  if(!target_variable%in%names(site_target_raw)||sum(!is.na(site_target_raw[target_variable]))==0){
-    message(paste0("No target observations at site ",site,". Skipping forecasts at this site."))
-    return()
+#  if(!target_variable%in%names(site_target_raw)||sum(!is.na(site_target_raw[target_variable]))==0){
+#    message(paste0("No target observations at site ",site,". Skipping forecasts at this site."))
+#    return()
     
-  } else {
+ # } else {
     
-    if(theme %in% c("ticks","beetles")){
-      site_target = site_target_raw %>%
-        filter(wday(datetime,label = T)=="Mon")|>
-        complete(datetime = full_seq(datetime,step),site_id)
-      #Find the most recent Monday
-      mon = Sys.Date()-abs(1-as.numeric(strftime(Sys.Date(), "%u")))
-      h = as.numeric(floor((mon-max(site_target$datetime))/step)+horiz)
-    } else {
+    # if(theme %in% c("ticks","beetles")){
+    #   site_target = site_target_raw %>%
+    #     filter(wday(datetime,label = T)=="Mon")|>
+    #     complete(datetime = full_seq(datetime,step),site_id)
+    #   #Find the most recent Monday
+    #   mon = Sys.Date()-abs(1-as.numeric(strftime(Sys.Date(), "%u")))
+    #   h = as.numeric(floor((mon-max(site_target$datetime))/step)+horiz)
+    # } else {
       site_target = site_target_raw |>
         complete(datetime = full_seq(datetime,1),site_id)
       h = as.numeric(forecast_date-max(site_target$datetime)+horiz)
-    }
+    #}
     
     site_target_past = site_target |> filter(datetime < forecast_date) |>
       right_join(met_daily,"datetime") ## merge in covariate data
     
     # Fit arima model
     if(sum(site_target[target_variable]<0,na.rm=T)>0){#If there are any negative values, don't consider transformation
-      fit = auto.arima(site_target_past[target_variable])
+      fit = forecast::auto.arima(site_target_past[target_variable])
     } else {
-      fit = auto.arima(site_target_past[target_variable], 
+      fit = forecast::auto.arima(site_target_past[target_variable], 
                        xreg = as.matrix(site_target_past[,c("air_temperature","relative_humidity")]),
                        lambda = "auto")
     }
