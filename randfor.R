@@ -26,15 +26,16 @@ here::i_am("randfor.R")
 source(here("R/download_target.R"))
 
 # Set model types
-model_themes = c("ticks") #This model is only relevant for three themes
-model_types = c("ticks")
+model_themes = c("phenology") #This model is only relevant for three themes
+model_types = c("phenology")
 
 
 #### Step 2: Get NOAA driver data
 
-forecast_date <- Sys.Date()
-noaa_date <- Sys.Date() - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
+forecast_date <- lubridate::date("2021-05-04")
+noaa_date <- lubridate::date("2021-05-04") - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
 site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") %>%
+  filter(field_site_id %in% c("HARV"))|> # can be useful for testing
   filter(if_any(matches(model_types),~.==1))
 all_sites = site_data$field_site_id
 
@@ -53,7 +54,6 @@ variables <- c('air_temperature',
 #Code from Freya Olsson to download and format meteorological data (had to be modified to deal with arrow issue on M1 mac). Major thanks to Freya here!!
 
 # Load stage 3 data
-noaa_date <- Sys.Date() - lubridate::days(1)
 endpoint = "data.ecoforecast.org"
 use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage2/parquet/0/", noaa_date)
 
@@ -131,7 +131,7 @@ train_site <- function(sites, noaa_past_mean, target_variable) {
       trees = 500,
       min_n = tune()) |>
       set_mode("regression") %>%
-      set_engine("ranger", importance = "impurity") 
+      set_engine("ranger", importance = "impurity", keep.inbag = TRUE) 
     
     #k-fold cross-validation
     randfor_resamp <- vfold_cv(site_target, v = 10, repeats = 5)# define k-fold cross validation procedure 
@@ -176,12 +176,11 @@ train_site <- function(sites, noaa_past_mean, target_variable) {
     #save model fit in minimal form
     res_bundle <-
       final_fit %>%            
-      butcher() %>% 
       bundle()
     
     predictor_formula <- formula(rec_base|>prep())|>as.character()|>pluck(3)
     
-    saveRDS(res_bundle, here(paste0("Forecast_submissions/Generate_forecasts/tg_randfor_all_sites/trained_models/", paste(theme, target_variable,"trained",Sys.Date(), sep = "-"), ".Rds")))
+    saveRDS(res_bundle, here(paste0("trained_models/rf/", paste(theme, target_variable,"trained",Sys.Date(), sep = "-"), ".Rds")))
     tibble(theme = theme, site = "all sites", 
            predictor_formula = predictor_formula, n_obs = nrow(site_target), 
            n_vfolds = "10", target_variable = target_variable, 
@@ -208,7 +207,7 @@ for (theme in model_themes) {
   }
   
   site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv")|>
-    #filter(field_site_id %in% c("ARIK", "BARC", "BIGC", "ABBY", "BARR", "BART"))|> # can be useful for testing
+    filter(field_site_id %in% c("HARV"))|> # can be useful for testing
     filter(get(type)==1) 
   
   sites = site_data$field_site_id
@@ -216,7 +215,7 @@ for (theme in model_themes) {
   
   #Set target variables for each theme
   if(theme == "aquatics")           {vars = c("temperature","oxygen","chla")}
-  if(theme == "phenology")          {vars = c("gcc_90","rcc_90")}
+  if(theme == "phenology")          {vars = c("gcc_90")}
   if(theme == "terrestrial_daily")  {vars = c("nee","le")}
   if(theme == "beetles")            {vars = c("abundance","richness")}
   if(theme == "ticks")              {vars = c("amblyomma_americanum")}
@@ -233,6 +232,12 @@ for (theme in model_themes) {
   
 }
 
+
 mod_sums_all <- syms(apropos("_mod_summaries"))|>
   map_dfr(~eval(.)|>bind_rows())|>
-  write_csv(here(paste0("Forecast_submissions/Generate_forecasts/tg_randfor_all_sites/model_training_summaries-", Sys.Date(),".csv")))
+  write_csv(here(paste0("trained_models/rf/model_training_summaries-", Sys.Date(),".csv")))
+
+readRDS("trained_models/rf/phenology-gcc_90-trained-2023-06-21.Rds") -> gcc_model
+predict(gcc_model$object$fit$fit$object, noaa_past_mean, type = "raw") -> outputs
+predict(gcc_model$object$fit$fit$object, noaa_past_mean, type = "conf_int") -> outputs_unc
+predict(gcc_model$object$fit$fit$object, noaa_past_mean, type = "numeric") -> outputs_numeric
