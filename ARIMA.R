@@ -10,33 +10,47 @@ library(neon4cast)
 library(lubridate)
 library(rMR)
 library(glue)
-source("ignore_sigpipe.R")
+#source("ignore_sigpipe.R")
 library(tsibble)
 library(fable)
 library(arrow)
-source("download_target.R")
+#source("download_target.R")
 library(forecast)
+library(here)
 
+download_target <- function(theme = c("aquatics", "beetles",
+                                      "phenology", "terrestrial_30min",
+                                      "terrestrial_daily","ticks")){  
+  theme <- match.arg(theme)
+  
+  target_file <- switch(theme,
+                        aquatics = "aquatics-targets.csv.gz",
+                        beetles = "beetles-targets.csv.gz",
+                        phenology = "phenology-targets.csv.gz",
+                        terrestrial_daily = "terrestrial_daily-targets.csv.gz",
+                        terrestrial_30min = "terrestrial_30min-targets.csv.gz",
+                        ticks = "ticks-targets.csv.gz"
+  )
+  download_url <- paste0("https://data.ecoforecast.org/neon4cast-targets/",
+                         theme, "/", target_file)
+  
+  readr::read_csv(download_url, show_col_types = FALSE,
+                  lazy = FALSE, progress = FALSE)#%>% 
+  #as_tibble(index=time, key=siteID)
+}
+target = download_target(theme="phenology")
+target = target |> filter(site_id == "HARV", variable == "gcc_90")
 
 #### Step 1: Define team name, team members, and theme
-
-team_name <- "EFI Theory"
-
-team_list <- list(list(individualName = list(givenName = "Abby", 
-                                             surName = "Lewis"),
-                       organizationName = "Virginia Tech",
-                       electronicMailAddress = "aslewis@vt.edu")
-)
-
 model_id = "tg_arima"
-model_themes = c("terrestrial_daily","aquatics","phenology","beetles","ticks") #This model is only relevant for three themes. I am registered for all three
-model_types = c("terrestrial","aquatics","phenology","beetles","ticks") #Replace terrestrial daily and 30min with terrestrial
+model_themes = c("phenology") #This model is only relevant for three themes. I am registered for all three
+model_types = c("phenology") #Replace terrestrial daily and 30min with terrestrial
 #Options: aquatics, beetles, phenology, terrestrial_30min, terrestrial_daily, ticks
 
 
 #### Step 2: Get NOAA driver data
-forecast_date <- Sys.Date()
-noaa_date <- Sys.Date() - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
+forecast_date <- as.Date("2021-05-04")
+noaa_date <- forecast_date - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
 
 #We're going to get data for all sites relevant to this model, so as to not have to re-load data for the same sites
 site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") %>%
@@ -45,57 +59,49 @@ all_sites = site_data$field_site_id
 
 # specify meteorological variables needed to make predictions
 variables <- c('air_temperature',
-"surface_downwelling_longwave_flux_in_air",
 "surface_downwelling_shortwave_flux_in_air",
 "precipitation_flux",
-"air_pressure",
-"relative_humidity",
-"air_temperature",
-"northward_wind",
-"eastward_wind")
+"relative_humidity")
 
 # Load stage 2 data
 endpoint = "data.ecoforecast.org"
 use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage2/parquet/0/", noaa_date)
 use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
 noaa_future <- arrow::open_dataset(use_s3) |>
-  dplyr::collect() |>
-  dplyr::filter(site_id %in% all_sites,
+  dplyr::filter(site_id %in% 'HARV',
                 datetime >= forecast_date,
-                variable == variables) 
+#                reference_datetime == lubridate::as_datetime(forecast_date),
+                variable %in% variables) |>
+  dplyr::collect()
 
 # Format met forecasts
 noaa_future_daily <- noaa_future |> 
   mutate(datetime = lubridate::as_date(datetime)) |> 
   # mean daily forecasts at each site per ensemble
-  group_by(datetime, site_id, parameter, variable) |> 
+  group_by(datetime, parameter, variable) |> 
   summarize(prediction = mean(prediction)) |>
   pivot_wider(names_from = variable, values_from = prediction) |>
   # convert to Celsius
   mutate(air_temperature = air_temperature - 273.15) |> 
-  select(datetime, site_id, all_of(variables), parameter)
+  select(datetime, all_of(variables), parameter)
+
+## grab past met data
+met = neon4cast::noaa_stage3() |>
+  filter(site_id == "HARV",variable %in% variables,datetime < forecast_date) |>
+  collect
+met_daily = met |>
+  mutate(datetime = lubridate::as_date(datetime)) |> 
+  # mean daily forecasts at each site per ensemble
+  group_by(datetime, variable) |> 
+  summarize(prediction = mean(prediction)) |>
+  pivot_wider(names_from = variable, values_from = prediction) |>
+  # convert to Celsius
+  mutate(air_temperature = air_temperature - 273.15) |> 
+  select(datetime, all_of(variables))
 
 #### Step 3.0: Define the forecasts model for a site
-forecast_site <- function(site,noaa_future_daily,target_variable) {
-  message(paste0("Running site: ", site))
-  
-  
-  # Get site information for elevation
-  site_info <- site_data |> dplyr::filter(field_site_id == site)
-  
-  mod_file <- list.files(here("Forecast_submissions/Generate_forecasts/tg_randfor/trained_models/"), pattern = paste(theme, site, target_variable, sep = "-"))
-  
-  if(!file.exists(here(paste0("Forecast_submissions/Generate_forecasts/tg_randfor/trained_models/",mod_file)))){
-    message(paste0("No trained model for site ",site,". Skipping forecasts at this site."))
-    return()
-    
-} else {
-
-    #  Get 30-day predicted temperature ensemble at the site
-    noaa_future <- noaa_future_daily%>%
-      filter(site_id == site)
-
-#### Step 3.0: Define the forecast model for a site
+site = "HARV"
+target_variable = "gcc_90"
 forecast_site <- function(site, target_variable, horiz,step) {
   
   message(paste0("Running site: ", site))
@@ -126,15 +132,21 @@ forecast_site <- function(site, target_variable, horiz,step) {
     } else {
       site_target = site_target_raw |>
         complete(datetime = full_seq(datetime,1),site_id)
-      h = as.numeric(Sys.Date()-max(site_target$datetime)+horiz)
+      h = as.numeric(forecast_date-max(site_target$datetime)+horiz)
     }
+    
+    site_target_past = site_target |> filter(datetime < forecast_date) |>
+      right_join(met_daily,"datetime") ## merge in covariate data
     
     # Fit arima model
     if(sum(site_target[target_variable]<0,na.rm=T)>0){#If there are any negative values, don't consider transformation
-      fit = auto.arima(site_target[target_variable])
+      fit = auto.arima(site_target_past[target_variable])
     } else {
-      fit = auto.arima(site_target[target_variable], lambda = "auto")
+      fit = auto.arima(site_target_past[target_variable], 
+                       xreg = as.matrix(site_target_past[,c("air_temperature","relative_humidity")]),
+                       lambda = "auto")
     }
+    
     
     # use the model to forecast target variable
     forecast_raw <- as.data.frame(forecast(fit,h=h,level=0.68))%>% #One SD
