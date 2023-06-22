@@ -32,8 +32,8 @@ model_types = c("phenology")
 
 #### Step 2: Get NOAA driver data
 
-forecast_date <- lubridate::date("2021-05-04")
-noaa_date <- lubridate::date("2021-05-04") - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
+forecast_date <- lubridate::date("2023-05-04")
+noaa_date <- lubridate::date("2023-05-04") - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
 site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") %>%
   filter(field_site_id %in% c("HARV"))|> # can be useful for testing
   filter(if_any(matches(model_types),~.==1))
@@ -46,7 +46,7 @@ load_stage2 <- function(site, endpoint, variables){
   use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
   parquet_file <- arrow::open_dataset(use_s3) |>
     dplyr::collect() |>
-    dplyr::filter(datetime >= lubridate::ymd('2017-01-01'),
+    dplyr::filter(datetime <= noaa_date,
                   variable %in% variables)|> #It would be more efficient to filter before collecting, but this is not running on my M1 mac
     na.omit() |> 
     mutate(datetime = lubridate::as_date(datetime)) |> 
@@ -83,7 +83,7 @@ load_stage3 <- function(site, endpoint, variables){
   use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
   parquet_file <- arrow::open_dataset(use_s3) |>
     dplyr::collect() |>
-    dplyr::filter(datetime >= lubridate::ymd('2017-01-01'),
+    dplyr::filter(datetime >= noaa_date,
                   variable %in% variables)|> #It would be more efficient to filter before collecting, but this is not running on my M1 mac
     na.omit() |> 
     mutate(datetime = lubridate::as_date(datetime)) |> 

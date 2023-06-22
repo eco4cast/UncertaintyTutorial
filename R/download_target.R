@@ -20,6 +20,7 @@ download_target <- function(theme = c("aquatics", "beetles",
                          theme, "/", target_file)
   
   readr::read_csv(download_url, show_col_types = FALSE,
-                  lazy = FALSE, progress = FALSE)#%>% 
+                  lazy = FALSE, progress = FALSE)|>
+                  filter(site_id %in% c("HARV"))#%>% 
   #as_tibble(index=time, key=siteID)
 }
