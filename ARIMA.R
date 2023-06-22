@@ -225,9 +225,10 @@ plot(yobs$datetime,resid,lwd=3,type='l',
 # quantile error vs lead time
 yquant = rep(NA,ncol(y1))
 for(t in seq_len(ncol(y1))){
-  yquant[t] = 1-findInterval(yobs$gcc_90[t],vec = sort(y1[,t]))/nrow(y1)
+  yquant[t] = findInterval(yobs$gcc_90[t],vec = sort(y1[,t]))/nrow(y1)
 }
 plot(yobs$datetime,yquant,type = 'l',ylab="Predictive Quantile",xlab="date")
+hist(yquant) ## should be uniform!
 
 # crps vs lead time
 crps = rep(NA,ncol(y1))
