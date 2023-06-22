@@ -1,0 +1,36 @@
+---
+title: "Uncertainty Tutorial"
+output: html_document
+date: "2023-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(neon4cast)
+library(lubridate)
+library(rMR)
+library(glue)
+library(tsibble)
+library(fable)
+library(arrow)
+library(forecast)
+library(here)
+library(sensitivity)
+library(mvtnorm)
+```
+
+# Forecast Uncertainty Tutorial: Using a forecast of Phenology as an example
+
+This tutorial will cover information on uncertainty analyses for forecasting models, as well
+as an application of methods to two models of phenology, one parametric and the other a machine learning model.
+
+## The Models
+
+## Methods of Uncertianty Analysis
+
+### Validation Analysis
+
+### One-at-a-time Analysis
+
+### Sobol Analysis
