@@ -28,4 +28,4 @@ x1 <- data.frame(cbind(par1, d1map, ic1))
 x2 <- data.frame(cbind(par2, d2map, ic2))
 
 #Sobol function call
-x <- sensitivity::sobol2002(model = predict(fit, n.ahead = 1, newxreg = noaa_future_daily[,c('air_temperature', 'relative_humidity')]), par1, par2, nboot = 100)
+x <- sensitivity::soboljansen(model = , X1 = x1, X2 = x2, conf = 0.95)
