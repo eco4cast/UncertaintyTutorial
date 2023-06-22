@@ -102,20 +102,9 @@ if(file.exists(here("Forecast_submissions/Generate_forecasts/noaa_downloads/past
   noaa_past <- map_dfr(all_sites, load_stage2, endpoint, variables)
   noaa_future <- map_dfr(all_sites, load_stage3, endpoint, variables)
 }
-
 noaa_past$site_id <- 1
 noaa_future$site_id <- 1
-noaa_future2 <- noaa_future |>
-  filter(datetime == noaa_date)
-noaa_future_a <- noaa_future2 |>
-  filter(parameter %in% seq(1:15))
-noaa_future_b <- noaa_future2 |>
-  filter(parameter %in% seq(16:30))
 
-
-
-noaa_future_a <- as.data.frame(noaa_future_a)
-noaa_future_b <- as.data.frame(noaa_future_b)
 ############################################ SET UP TRAINING LOOPS ###################################
 
 ##### Training function ##########
@@ -123,7 +112,7 @@ noaa_future_b <- as.data.frame(noaa_future_b)
 train_site <- function(sites, noaa_past, target_variable) {
   message(paste0("Running ",target_variable," at all sites"))
   
-  
+  # browser()
   # Merge in past NOAA data into the targets file, matching by date.
   site_target <- target |>
     dplyr::select(datetime, site_id, variable, observation) |>
@@ -132,7 +121,8 @@ train_site <- function(sites, noaa_past, target_variable) {
     tidyr::pivot_wider(names_from = "variable", values_from = "observation") |>
     dplyr::left_join(noaa_past%>%
                        filter(site_id %in% sites), by = c("datetime", "site_id"))|>
-    drop_na() #removes non-complete cases - BEWARE
+    drop_na() |> #removes non-complete cases - BEWARE
+    select(-datetime, -site_id)
   
   if(!target_variable%in%names(site_target)){
     message(paste0("No target observations at site ",site,". Skipping forecasts at this site."))
@@ -146,10 +136,9 @@ train_site <- function(sites, noaa_past, target_variable) {
     # Tune and fit lasso model - making use of tidymodels
     
     
-    
     #Recipe for training models
     rec_base <- recipe(site_target)|>
-      step_rm(c("datetime", "site_id"))|>
+      #step_rm(c("datetime", "site_id", "parameter"))|>
       update_role(everything(), new_role = "predictor")|>
       update_role({{target_variable}}, new_role = "outcome")|>
       #step_dummy(site_id)|> #Random forest handles categorical predictor without need to convert to dummy 
@@ -253,9 +242,7 @@ for (theme in model_themes) {
   if(theme == "ticks")              {vars = c("amblyomma_americanum")}
   
   
-  mod_summaries <- map(vars, possibly(
-    ~train_site(sites = sites, target_variable = ., noaa_past = noaa_past), 
-    otherwise = tibble(mtry = NA_real_)))|> #possibly only accepts static values so can't map '.x' into site or target_variable
+  mod_summaries <- map(vars, ~train_site(sites = sites, target_variable = ., noaa_past = noaa_past))|> #possibly only accepts static values so can't map '.x' into site or target_variable
     compact()|>
     list_rbind()|>
     drop_na()
@@ -269,16 +256,71 @@ mod_sums_all <- syms(apropos("_mod_summaries"))|>
   map_dfr(~eval(.)|>bind_rows())|>
   write_csv(here(paste0("trained_models/rf/model_training_summaries-", Sys.Date(),".csv")))
 
-readRDS("trained_models/rf/phenology-gcc_90-trained-2023-06-22.Rds") -> gcc_model
+gcc_model <- readRDS("trained_models/rf/phenology-gcc_90-trained-2023-06-22.Rds") |> unbundle()
 #predict(gcc_model$object$fit$fit$object, noaa_future, type = "raw") -> outputs
-predict(gcc_model$object$fit$fit$object, noaa_future_a[,2:11], type = "conf_int") -> outputs_unc
-predict(gcc_model$object$fit$fit$object, noaa_future_b, type = "numeric") -> outputs_numeric
+#predict(gcc_model$object$fit$fit$object, noaa_future_a[,2:11], type = "conf_int") -> outputs_unc
+#predict(gcc_model$object$fit$fit$object, noaa_future_b, type = "numeric") -> outputs_numeric
 
-model_test <- function(X, mod = gcc_model$object$fit$fit$object) {
-  y <- predict(mod, X, type = "numeric")
-  y <- y$.pred
+rec <- prep(extract_preprocessor(gcc_model))
+N_ens <- 50000
+noaa_futures <- noaa_future |>
+  filter(datetime >= noaa_date & datetime <= as.Date("2021-06-30")) |> 
+  group_by(datetime) |> 
+  group_split()
+
+sobol_time <- tibble(
+  forecast_date = seq.Date(noaa_date, as.Date("2021-06-30"), by = "day"),
+  ensemble = (noaa_futures))
+
+library(future)
+library(furrr)
+library(future.callr)
+plan(callr, workers = 8)
+
+
+source("R/predict_rf_ensemble.R")
+model_test <- function(X, mod = gcc_model$fit$fit$fit) {
+  y <- predict_tidy_ensemble(mod, X)
+  #  y <- y$.pred
+  y
 }
 
+sobol_time_fit <- sobol_time |> 
+  mutate(sobol = future_map(noaa_futures, function(x) {
+    noaa_future2 <- x |> 
+      select(-datetime, -site_id, -parameter) |> 
+      sample_n(N_ens, replace = TRUE)
+    
+    noaa_future2 <- bake(rec, noaa_future2) |> 
+      mutate(parameter_seed = sample.int(n()))
+    
+    noaa_future_a <- noaa_future2 |>
+      filter(parameter_seed %in% 1:round(N_ens/2))
+    noaa_future_b <- noaa_future2 |>
+      filter(parameter_seed %in% round(N_ens/2 + 1):N_ens) 
+    
+    for(i in seq_len(ncol(noaa_future_b))) {
+      noaa_future_b[[i]] <- sample(noaa_future_b[[i]], length(noaa_future_b[[i]]), replace = FALSE)
+    }
+    
+    s2 <- soboljansen(model = model_test, X1 = noaa_future_a, X2 = noaa_future_b, nboot = 0, conf = 0.95)
+    
+    return(s2)
+    
+  }))
 
-s2 <- sobol(model = model_test, X1 = noaa_future_a, X2 = noaa_future_b, order = 1, nboot = 100, conf = 0.95)
-ggplot2::ggplot(s2)
+
+sobol_time_fit_data <- sobol_time_fit |> 
+  mutate(T = map(sobol, function(x) {
+    x$T |> rownames_to_column(var = "variable")
+  })) |> 
+  select(forecast_date, T) |> 
+  unnest(T) |> 
+  mutate(variable = fct_recode(variable, tree_uncertainty = "parameter_seed")) |> 
+  mutate(variable = fct_relevel(variable, "tree_uncertainty", after = Inf))
+
+ggplot(sobol_time_fit_data, aes(x = forecast_date, fill = variable, y = original)) +
+  geom_area()
+
+
+
