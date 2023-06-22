@@ -157,10 +157,9 @@ horiz = 35
         
     ## not currently generalized to multiple types of arima model
     arima.fx <- function(inputs,drivers,horiz=35,lag=1){
-      IC = inputs[,]
+      IC = inputs[,"dayof"]
       met.ens = inputs[,"noaa_ensemble_member"]
-      
-      IC,drivers,met.ens,param,sigma
+      param   = inputs[,1:3]
       betas = param[,which(colnames(param) %in% variables)]
       if(is.null(dim(IC))) IC = as.matrix(IC,ncol=1)
       IC.bc = IC - param[,"intercept"] #boxcox(IC,lambda)
@@ -187,7 +186,9 @@ horiz = 35
     met.ens = sample(1:31,ne,replace=TRUE)
     drivers = noaa_future_daily
     
-    y = arima.fx(IC,drivers,met.ens,param,sigma=0,lambda=0,horiz=35)
+    y1 = arima.fx(x1,drivers,horiz=35)
+    y2 = arima.fx(x2,drivers,horiz=35)
     
-    plot(y[1,],type='l')
-    for(i in 1:ne){lines(y[i,])}
+    plot(y1[1,],type='l')
+    for(i in 1:ne){lines(y1[i,])}
+    for(i in 1:ne){lines(y2[i,],col=2)}
