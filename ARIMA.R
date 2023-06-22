@@ -145,139 +145,45 @@ horiz = 35
     } else {
       fit = forecast::auto.arima(site_target_past[target_variable], 
                        xreg = as.matrix(site_target_past[,c("air_temperature","relative_humidity")]),
-                       lambda = "auto",
+#                       lambda = "auto",
                        max.d = 0, max.D = 0,max.q=0)
     }
 
     lambda = fit$lambda
     boxcox = function(x,lambda){(x^lambda-1)/lambda}
     inv.boxcox = function(x,lambda){
-      pow((x * lambda) + 1, 1 / lambda) - 1
+      ((x * lambda) + 1)^(1 / lambda) - 1
     }
         
     ## not currently generalized to multiple types of arima model
-    arima.fx <- function(IC,drivers,param,sigma,lambda,horiz){
-      lag = 1
+    arima.fx <- function(IC,drivers,met.ens,param,sigma,lambda,horiz,lag=1){
       betas = param[,which(colnames(param) %in% variables)]
-      IC.bc = boxcox(IC,lambda)
+      if(is.null(dim(IC))) IC = as.matrix(IC,ncol=1)
+      IC.bc = IC - param[,"intercept"] #boxcox(IC,lambda)
       X = matrix(NA,nrow=nrow(IC),ncol=horiz+lag+1)
-      X[,seq_len(lag)] = IC
-      for(t in lag + (1:horiz)){
-        X[,t+1] = X[,t] + param$intercept + drivers %*% betas 
+      X[,seq_len(lag)] = IC.bc
+      dates = sort(unique(drivers$datetime))
+      for(t in lag + (0:horiz)){
+        met = drivers |>
+          filter(datetime == dates[t]) |>
+          ungroup() |>
+          select(air_temperature,relative_humidity)
+        
+        X[,t+1] = unlist(X[,t] + met[met.ens,1] * betas[,1] + met[met.ens,2]*betas[2]) 
       }
-      return(X[,-lag])
+      y = X + param[,"intercept"]#inv.boxcox(X[,-lag],lambda)
+      return(y)
     }
-   
+    
     ## build ensembles
     source("paramIC.R")
+    lag = 1
     param = paramSamples
     IC    = IC[,lag]
+    met.ens = sample(1:31,ne,replace=TRUE)
+    drivers = noaa_future_daily
     
-     
-#    fable:::
+    y = arima.fx(IC,drivers,met.ens,param,sigma=0,lambda=0,horiz=35)
     
-    sim <- map(seq_len(times), function(x) generate(fit, 
-                                                    new_data, specials, bootstrap = TRUE)[[".sim"]]) %>% 
-      transpose() %>% map(as.numeric)
-    return(distributional::dist_sample(sim))     
-      
-      
-    # use the model to forecast target variable
-    forecast_raw <- as.data.frame(forecast(fit,h=h,level=0.68))%>% #One SD
-      mutate(sigma = `Hi 68`-`Point Forecast`)
-    
-    forecast = data.frame(datetime = (1:h)*step+max(site_target$datetime),
-                          reference_datetime = Sys.Date(),
-                          site_id = site,
-                          family = "normal",
-                          variable = target_variable,
-                          mu = as.numeric(forecast_raw$`Point Forecast`),
-                          sigma = as.numeric(forecast_raw$sigma),
-                          model_id = model_id)%>%
-      pivot_longer(cols = c(mu,sigma), names_to = "parameter",values_to = "prediction")%>%
-      select(model_id, datetime, reference_datetime,
-             site_id, family, parameter, variable, prediction)
-    return(forecast)
-  }
-}
-
-#Quick function to repeat for all variables
-run_all_vars = function(var,sites,forecast_site,horiz,step){
-  
-  message(paste0("Running variable: ", var))
-  forecast <- map_dfr(sites,forecast_site,var,horiz,step)
-  
-}
-
-### AND HERE WE GO! We're ready to start forecasting ### 
-for (theme in model_themes) {
-  if(!theme%in%c("beetles","ticks") | wday(Sys.Date(), label=TRUE)=="Sun"){ #beetles and ticks only want forecasts every Sunday
-    #Step 1: Download latest target data and site description data
-    target = download_target(theme)
-    type = ifelse(theme%in% c("terrestrial_30min", "terrestrial_daily"),"terrestrial",theme)
-    
-    if("siteID" %in% colnames(target)){ #Sometimes the site is called siteID instead of site_id. Fixing here
-      target = target%>%
-        rename(site_id = siteID)
-    }
-    if("time" %in% colnames(target)){ #Sometimes the datetime column is instead labeled "time"
-      target = target%>%
-        rename(datetime = time)
-    }
-    
-    site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") %>%
-      filter(get(type)==1)
-    sites = site_data$field_site_id
-    
-    #Set target variables
-    if(type == "aquatics")           {vars = c("temperature","oxygen","chla")
-                                                horiz = 30
-                                                step = 1
-                                                }
-    if(type == "ticks")              {vars = c("amblyomma_americanum")
-                                                horiz = 52 #52 weeks
-                                                step = 7
-                                                }
-    if(type == "phenology")          {vars = c("gcc_90","rcc_90")
-                                                horiz = 30 
-                                                step = 1}
-    if(type == "beetles")            {vars = c("abundance","richness")
-                                                horiz = 52 #52 weeks
-                                                step = 7}
-    if(theme == "terrestrial_daily")  {vars = c("nee","le")
-                                                horiz = 30
-                                                step = 1}
-    if(theme == "terrestrial_30min")  {vars = c("nee","le")
-                                                horiz = 30
-                                                step = 1/24/2}
-  
-    ## Test with a single site first!
-    #forecast <- map_dfr(vars,run_all_vars,sites[1],forecast_site,horiz,step)
-    
-    #Visualize the ensemble predictions -- what do you think?
-    #forecast %>%
-    #  pivot_wider(names_from = parameter,values_from = prediction)%>%
-    #  ggplot(aes(x = datetime)) +
-    #  geom_ribbon(aes(ymax = mu + sigma, ymin = mu-sigma))+
-    #  geom_line(aes(y = mu),alpha=0.3) +
-    #  facet_wrap(~variable, scales = "free")
-    
-    # Run all sites -- may be slow!
-    forecast <- map_dfr(vars,run_all_vars,sites,forecast_site,horiz,step)
-    
-    #Forecast output file name in standards requires for Challenge.
-    # csv.gz means that it will be compressed
-    file_date <- Sys.Date() #forecast$reference_datetime[1]
-    model_id = "tg_arima"
-    forecast_file <- paste0(theme,"-",file_date,"-",model_id,".csv.gz")
-    
-    forecast <- forecast%>%
-      filter(datetime>=file_date)
-    
-    #Write csv to disk
-    write_csv(forecast, forecast_file)
-    
-    # Step 5: Submit forecast!
-    neon4cast::submit(forecast_file = forecast_file, metadata = NULL, ask = FALSE)
-  }
-}
+    plot(y[1,],type='l')
+    for(i in 1:ne){lines(y[i,])}
