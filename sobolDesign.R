@@ -4,8 +4,8 @@ library('sensitivity')
 library('mvtnorm')
 
 #Number of design samples
-n <- 10000
-ne <- 10000
+n <- 100000
+ne <- 100000
 lag = 3
 
 #Design X1 and X2
@@ -16,7 +16,7 @@ d1map <- as.matrix(sample(31, n, replace = TRUE))
 colnames(d1map) <- c('noaa_ensemble_member')
 d2map <- as.matrix(sample(31, n, replace = TRUE))
 colnames(d2map) <- c('noaa_ensemble_member')
-e
+
 ICuncert <- forecast(fit, h=0, level=0.68, xreg = as.matrix(site_target_past[, c('air_temperature', 'relative_humidity')]))
 IC.mean = head(ICuncert$mean,n=lag)
 IC.sd   = (head(ICuncert$upper,n=lag) - head(ICuncert$lower,n=lag))/2 
@@ -41,10 +41,12 @@ sobolOuts$S[sobolOuts$S < 0] <- 0
 sobolOuts$T[sobolOuts$T < 0] <- 0
 
 #Plots
-plot(sobolOuts$S[1,1:17], type = 'l', ylim = c(0,1.05), main = 'Sobol First Order Indices',
+plot(sobolOuts$S[1,], type = 'l', ylim = c(0,1.05), lwd = 3, main = 'Sobol First Order Indices',
      ylab = 'Index', xlab = 'Day')
-for(i in 2:nrow(sobolOuts$S)){lines(sobolOuts$S[i,1:17], ylim = c(0,1.1), col = i)}
+for(i in 2:nrow(sobolOuts$S)){lines(sobolOuts$S[i,], ylim = c(0,1.1), col = i, lwd = 3)}
+legend('topright', legend = rownames(sobolOuts$S), col = 1:7, lty=1, lwd=3, cex = 0.8)
 
-plot(sobolOuts$T[1,1:17], type = 'l', ylim = c(0,1.05), main = 'Sobol Total Order Indices',
+plot(sobolOuts$T[1,], type = 'l', ylim = c(0,1.05), lwd = 3, main = 'Sobol Total Order Indices',
      ylab = 'Index', xlab = 'Day')
-for(i in 2:nrow(sobolOuts$T)){lines(sobolOuts$S[i,1:17], ylim = c(0,1.1), col = i)}
+for(i in 2:nrow(sobolOuts$T)){lines(sobolOuts$S[i,], ylim = c(0,1.1), col = i, lwd = 3)}
+legend('topright', legend = rownames(sobolOuts$T), col = 1:7, lty=1, lwd=3, cex = 0.8)
