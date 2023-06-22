@@ -102,6 +102,7 @@ met_daily = met |>
 #### Step 3.0: Define the forecasts model for a site
 site = "HARV"
 target_variable = "gcc_90"
+horiz = 35
 #forecast_site <- function(site, target_variable, horiz,step) {
   
   message(paste0("Running site: ", site))
@@ -144,12 +145,23 @@ target_variable = "gcc_90"
     } else {
       fit = forecast::auto.arima(site_target_past[target_variable], 
                        xreg = as.matrix(site_target_past[,c("air_temperature","relative_humidity")]),
-                       lambda = "auto")
+                       lambda = "auto",
+                       max.d = 0, max.D = 0,max.q=0)
     }
     
-    arima.fx <- function(IC,drivers,param){
-      xm <- drop(xreg %*% coef)
-      
+    boxcox = function(x,lambda){(x^lambda-1)/lambda}
+    
+    ## not currently generalized to multiple types of arima model
+    arima.fx <- function(IC,drivers,param,sigma,lambda,horiz){
+      lag = 1
+      betas = param[,which(colnames(param) %in% variables)]
+      IC.bc = boxcox(IC,lambda)
+      X = matrix(NA,nrow=nrow(IC),ncol=horiz+lag+1)
+      X[,seq_len(lag)] = IC
+      for(t in lag + (1:horiz)){
+        X[,t+1] = X[,t] + param$intercept + drivers %*% betas 
+      }
+      return(X[,-lag])
     }
     
 #    fable:::
