@@ -49,7 +49,7 @@ model_types = c("phenology") #Replace terrestrial daily and 30min with terrestri
 
 
 #### Step 2: Get NOAA driver data
-forecast_date <- as.Date("2021-05-04")
+forecast_date <- as.Date("2023-05-04")
 noaa_date <- forecast_date - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
 
 #We're going to get data for all sites relevant to this model, so as to not have to re-load data for the same sites
@@ -147,7 +147,19 @@ target_variable = "gcc_90"
                        lambda = "auto")
     }
     
+    arima.fx <- function(IC,drivers,param){
+      xm <- drop(xreg %*% coef)
+      
+    }
     
+#    fable:::
+    
+    sim <- map(seq_len(times), function(x) generate(fit, 
+                                                    new_data, specials, bootstrap = TRUE)[[".sim"]]) %>% 
+      transpose() %>% map(as.numeric)
+    return(distributional::dist_sample(sim))     
+      
+      
     # use the model to forecast target variable
     forecast_raw <- as.data.frame(forecast(fit,h=h,level=0.68))%>% #One SD
       mutate(sigma = `Hi 68`-`Point Forecast`)
