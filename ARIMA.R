@@ -156,7 +156,11 @@ horiz = 35
     }
         
     ## not currently generalized to multiple types of arima model
-    arima.fx <- function(IC,drivers,met.ens,param,sigma,lambda,horiz,lag=1){
+    arima.fx <- function(inputs,drivers,horiz=35,lag=1){
+      IC = inputs[,]
+      met.ens = inputs[,"noaa_ensemble_member"]
+      
+      IC,drivers,met.ens,param,sigma
       betas = param[,which(colnames(param) %in% variables)]
       if(is.null(dim(IC))) IC = as.matrix(IC,ncol=1)
       IC.bc = IC - param[,"intercept"] #boxcox(IC,lambda)
