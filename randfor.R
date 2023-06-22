@@ -264,12 +264,12 @@ gcc_model <- readRDS("trained_models/rf/phenology-gcc_90-trained-2023-06-22.Rds"
 rec <- prep(extract_preprocessor(gcc_model))
 N_ens <- 50000
 noaa_futures <- noaa_future |>
-  filter(datetime >= noaa_date & datetime <= as.Date("2021-06-30")) |> 
+  filter(datetime >= noaa_date & datetime <= as.Date("2023-06-21")) |> 
   group_by(datetime) |> 
   group_split()
 
 sobol_time <- tibble(
-  forecast_date = seq.Date(noaa_date, as.Date("2021-06-30"), by = "day"),
+  forecast_date = seq.Date(noaa_date, as.Date("2023-06-21"), by = "day"),
   ensemble = (noaa_futures))
 
 library(future)
