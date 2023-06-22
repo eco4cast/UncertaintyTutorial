@@ -148,9 +148,13 @@ horiz = 35
                        lambda = "auto",
                        max.d = 0, max.D = 0,max.q=0)
     }
-    
+
+    lambda = fit$lambda
     boxcox = function(x,lambda){(x^lambda-1)/lambda}
-    
+    inv.boxcox = function(x,lambda){
+      pow((x * lambda) + 1, 1 / lambda) - 1
+    }
+        
     ## not currently generalized to multiple types of arima model
     arima.fx <- function(IC,drivers,param,sigma,lambda,horiz){
       lag = 1
@@ -163,7 +167,13 @@ horiz = 35
       }
       return(X[,-lag])
     }
+   
+    ## build ensembles
+    source("paramIC.R")
+    param = paramSamples
+    IC    = IC[,lag]
     
+     
 #    fable:::
     
     sim <- map(seq_len(times), function(x) generate(fit, 
