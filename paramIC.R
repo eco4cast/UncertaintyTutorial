@@ -1,5 +1,5 @@
 #Set number of samples
-ne = 100
+ne = 10000
 lag = 3
 
 #Parameters
