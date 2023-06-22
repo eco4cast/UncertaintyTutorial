@@ -24,8 +24,11 @@ colnames(ic1) <- c('lag2', 'lag1', 'dayof')
 ic2 <- rmvnorm(n, IC.mean, diag(as.vector(IC.sd)^2))
 colnames(ic2) <- c('lag2', 'lag1', 'dayof')
 
-x1 <- data.frame(cbind(par1, d1map, ic1))
-x2 <- data.frame(cbind(par2, d2map, ic2))
+sigma.ens1 = data.frame(sigma.ens = 1:ne)
+sigma.ens2 = data.frame(sigma.ens = sample(1:ne,ne,replace=TRUE))
+
+x1 <- data.frame(cbind(par1, d1map, ic1,sigma.ens1))
+x2 <- data.frame(cbind(par2, d2map, ic2,sigma.ens2))
 
 #Sobol function call
 x <- sensitivity::soboljansen(model = , X1 = x1, X2 = x2, conf = 0.95)
