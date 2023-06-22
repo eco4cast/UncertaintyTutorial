@@ -1,6 +1,6 @@
 #' Make a prediction from a ranger::ranger object emulating an enemble instance
 #' 
-#' @param model_object a `ranger` model fit. Must have been fit with `keep.inbag = TRUE`
+#' @param model_object a tidymodels workflow object. For `ranger` models, must have been fit with `keep.inbag = TRUE`
 #' @param new_data data to predict, must have a column named `"parameter_seed"` in addition to the model variables
 predict_tidy_ensemble <- function(model_object, new_data) {
   if(inherits(model_object, "bundle")) model_object <- unbundle(model_object)
