@@ -147,6 +147,10 @@ if(sum(site_target[target_variable]<0,na.rm=T)>0){#If there are any negative val
                              xreg = as.matrix(site_target_past[,c("air_temperature","relative_humidity")]),
                              #                       lambda = "auto",
                              max.d = 0, max.D = 0,max.q=0)
+  
+  fit2 = forecast::Arima(site_target_past[target_variable], 
+                             xreg = as.matrix(site_target_past[,c("air_temperature","relative_humidity")]),
+                        order=c(1,0,0))
 }
 
 lambda = fit$lambda
@@ -178,7 +182,8 @@ arima.fx <- function(inputs,drivers,epsilon,horiz=35,lag=1){
     met$relative_humidity[is.na(met$relative_humidity)] = mean(met$relative_humidity,na.rm = TRUE)
     #met[,nrow(met)+1] = apply(met,2,mean,na.rm=TRUE)
     
-    X[,t+1] = unlist(X[,t] + met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
+#    X[,t+1] = unlist(X[,t] + met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
+    X[,t+1] = unlist(met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
     
 
   }
