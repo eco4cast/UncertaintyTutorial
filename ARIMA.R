@@ -182,6 +182,7 @@ horiz = 35
     ## build ensembles
     source("paramIC.R")
     lag = 1
+    horiz = 35
     param = paramSamples
     IC    = IC[,lag]
     met.ens = sample(1:31,ne,replace=TRUE)
