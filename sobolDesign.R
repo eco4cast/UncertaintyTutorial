@@ -30,5 +30,6 @@ sigma.ens2 = data.frame(sigma.ens = sample(1:ne,ne,replace=TRUE))
 x1 <- data.frame(cbind(par1, d1map, ic1, sigma.ens1))
 x2 <- data.frame(cbind(par2, d2map, ic2, sigma.ens2))
 
+
 #Sobol function call
 soboljansen(model = arima.fx, X1 = x1, X2 = x2, drivers = noaa_future_daily, horiz = 35, epsilon = epsilon, conf = 0.95)

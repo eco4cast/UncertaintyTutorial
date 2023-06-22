@@ -156,9 +156,10 @@ horiz = 35
     }
         
     ## not currently generalized to multiple types of arima model
-    arima.fx <- function(inputs,drivers,horiz=35,lag=1){
+    arima.fx <- function(inputs,drivers,epsilon,horiz=35,lag=1){
       IC = inputs[,"dayof"]
       met.ens = inputs[,"noaa_ensemble_member"]
+      sig.ens = inputs[,"sigma.ens"]
       param   = inputs[,1:3]
       betas = param[,which(colnames(param) %in% variables)]
       if(is.null(dim(IC))) IC = as.matrix(IC,ncol=1)
@@ -172,7 +173,7 @@ horiz = 35
           ungroup() |>
           select(air_temperature,relative_humidity)
         
-        X[,t+1] = unlist(X[,t] + met[met.ens,1] * betas[,1] + met[met.ens,2]*betas[2]) 
+        X[,t+1] = unlist(X[,t] + met[met.ens,1] * betas[,1] + met[met.ens,2]*betas[2]) + epsilon[sig.ens,t]
       }
       y = X + param[,"intercept"]#inv.boxcox(X[,-lag],lambda)
       return(y)
@@ -185,9 +186,10 @@ horiz = 35
     IC    = IC[,lag]
     met.ens = sample(1:31,ne,replace=TRUE)
     drivers = noaa_future_daily
-    
-    y1 = arima.fx(x1,drivers,horiz=35)
-    y2 = arima.fx(x2,drivers,horiz=35)
+    epsilon = rmvnorm(ne,rep(0,horiz+lag),diag(rep(fit$sigma2,horiz+lag)))
+
+    y1 = arima.fx(x1,drivers,epsilon,horiz=35)
+    y2 = arima.fx(x2,drivers,epsilon,horiz=35)
     
     plot(y1[1,],type='l')
     for(i in 1:ne){lines(y1[i,])}
