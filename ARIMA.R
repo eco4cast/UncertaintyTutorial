@@ -204,16 +204,34 @@ for(i in 1:ne){lines(y1[i,])}
 for(i in 1:ne){lines(y2[i,],col=2)}
 
 #### Validation uncertainty #### 
+yobs = site_target |>
+  filter(between(datetime,forecast_date,forecast_date+lubridate::days(horiz+1)))
 
 # model time series with CI and data
 ybar = apply(y1,2,quantile,c(0.025,0.5,0.975),na.rm=TRUE)
 
-apply(is.na(y1),2,sum)
+plot(yobs$datetime,ybar[2,],lwd=3,
+     ylim=range(ybar,na.rm = TRUE),type='l',
+     ylab="gcc90",xlab="date")
+lines(yobs$datetime,ybar[1,],lty=2)
+lines(yobs$datetime,ybar[3,],lty=2)
+points(yobs$datetime,yobs$gcc_90,pch="+",cex=2,col=2)
 
 # raw error vs lead time
+resid = ybar[2,] - yobs$gcc_90
+plot(yobs$datetime,resid,lwd=3,type='l',
+     ylab="model - data",xlab="date")
 
 # quantile error vs lead time
+yquant = rep(NA,ncol(y1))
+for(t in seq_len(ncol(y1))){
+  yquant[t] = 1-findInterval(yobs$gcc_90[t],vec = sort(y1[,t]))/nrow(y1)
+}
+plot(yobs$datetime,yquant,type = 'l',ylab="Predictive Quantile",xlab="date")
 
 # crps vs lead time
-
-
+crps = rep(NA,ncol(y1))
+for(t in seq_len(ncol(y1)-1)){
+  crps[t] = scoringRules::crps_sample(yobs$gcc_90[t],dat = y1[,t])
+}
+plot(yobs$datetime,crps,type = 'l',xlab="date")
