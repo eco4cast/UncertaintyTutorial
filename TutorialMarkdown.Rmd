@@ -22,15 +22,180 @@ library(mvtnorm)
 
 # Forecast Uncertainty Tutorial: Using a forecast of Phenology as an example
 
-This tutorial will cover information on uncertainty analyses for forecasting models, as well
-as an application of methods to two models of phenology, one parametric and the other a machine learning model.
+This tutorial will cover information on uncertainty analyses for forecasting models, as well as an application of methods to two models of phenology, one parametric and the other a machine learning model.
 
 ## The Models
 
+The models we used are adapted from the EFI Theory Groups automated forecasts, which can be found here: LINK. We used an ARIMA model as our parametric model, and a Random Forest model as our machine learning model.
+
+For both models, we will need to load in the data from NEON to make the forecasts.
+
+### ARIMA Model (parametric)
+
+First, we load in the required data, including driver data. Then, we will format the data.
+
+```{r}
+download_target <- function(theme = c("aquatics", "beetles",
+                                      "phenology", "terrestrial_30min",
+                                      "terrestrial_daily","ticks")){  
+  theme <- match.arg(theme)
+  
+  target_file <- switch(theme,
+                        aquatics = "aquatics-targets.csv.gz",
+                        beetles = "beetles-targets.csv.gz",
+                        phenology = "phenology-targets.csv.gz",
+                        terrestrial_daily = "terrestrial_daily-targets.csv.gz",
+                        terrestrial_30min = "terrestrial_30min-targets.csv.gz",
+                        ticks = "ticks-targets.csv.gz"
+  )
+  download_url <- paste0("https://data.ecoforecast.org/neon4cast-targets/",
+                         theme, "/", target_file)
+  
+  readr::read_csv(download_url, show_col_types = FALSE,
+                  lazy = FALSE, progress = FALSE)#%>% 
+  #as_tibble(index=time, key=siteID)
+}
+target = download_target(theme="phenology")
+target = target |> filter(site_id == "HARV", variable == "gcc_90")
+
+#### Step 1: Define team name, team members, and theme
+model_id = "tg_arima"
+model_themes = c("phenology") #This model is only relevant for three themes. I am registered for all three
+model_types = c("phenology")
+
+#### Step 2: Get NOAA driver data
+forecast_date <- as.Date("2023-05-04")
+noaa_date <- forecast_date - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
+
+#We're going to get data for all sites relevant to this model, so as to not have to re-load data for the same sites
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") %>%
+  filter(if_any(matches(model_types),~.==1))
+all_sites = site_data$field_site_id
+
+# specify meteorological variables needed to make predictions
+variables <- c('air_temperature',
+               "surface_downwelling_shortwave_flux_in_air",
+               "precipitation_flux",
+               "relative_humidity")
+
+# Load stage 2 data
+endpoint = "data.ecoforecast.org"
+use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage2/parquet/0/", noaa_date)
+use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
+noaa_future <- arrow::open_dataset(use_s3) |>
+  dplyr::filter(site_id %in% 'HARV',
+                datetime >= forecast_date,
+                #                reference_datetime == lubridate::as_datetime(forecast_date),
+                variable %in% variables) |>
+  dplyr::collect()
+
+# Format met forecasts
+noaa_future_daily <- noaa_future |> 
+  mutate(datetime = lubridate::as_date(datetime)) |> 
+  # mean daily forecasts at each site per ensemble
+  group_by(datetime, parameter, variable) |> 
+  summarize(prediction = mean(prediction)) |>
+  pivot_wider(names_from = variable, values_from = prediction) |>
+  # convert to Celsius
+  mutate(air_temperature = air_temperature - 273.15) |> 
+  select(datetime, all_of(variables), parameter)
+
+## grab past met data
+met = neon4cast::noaa_stage3() |>
+  filter(site_id == "HARV",variable %in% variables,datetime < forecast_date) |>
+  collect()
+met_daily = met |>
+  mutate(datetime = lubridate::as_date(datetime)) |> 
+  # mean daily forecasts at each site per ensemble
+  group_by(datetime, variable) |> 
+  summarize(prediction = mean(prediction)) |>
+  pivot_wider(names_from = variable, values_from = prediction) |>
+  # convert to Celsius
+  mutate(air_temperature = air_temperature - 273.15) |> 
+  select(datetime, all_of(variables))
+```
+
+Now, we can use the data to fit our model.
+
+```{r}
+site = "HARV"
+target_variable = "gcc_90"
+horiz = 35
+#forecast_site <- function(site, target_variable, horiz,step) {
+
+message(paste0("Running site: ", site))
+
+# Get site information for elevation
+#site_info <- site_data |> dplyr::filter(field_site_id == site)
+
+# Format site data for arima model
+site_target_raw <- target |>
+  dplyr::select(datetime, site_id, variable, observation) |>
+  dplyr::filter(variable == target_variable, 
+                site_id == site) |> 
+  tidyr::pivot_wider(names_from = "variable", values_from = "observation")
+
+#  if(!target_variable%in%names(site_target_raw)||sum(!is.na(site_target_raw[target_variable]))==0){
+#    message(paste0("No target observations at site ",site,". Skipping forecasts at this site."))
+#    return()
+
+# } else {
+
+# if(theme %in% c("ticks","beetles")){
+#   site_target = site_target_raw %>%
+#     filter(wday(datetime,label = T)=="Mon")|>
+#     complete(datetime = full_seq(datetime,step),site_id)
+#   #Find the most recent Monday
+#   mon = Sys.Date()-abs(1-as.numeric(strftime(Sys.Date(), "%u")))
+#   h = as.numeric(floor((mon-max(site_target$datetime))/step)+horiz)
+# } else {
+site_target = site_target_raw |>
+  complete(datetime = full_seq(datetime,1),site_id)
+h = as.numeric(forecast_date-max(site_target$datetime)+horiz)
+#}
+
+site_target_past = site_target |> filter(datetime < forecast_date) |>
+  right_join(met_daily,"datetime") ## merge in covariate data
+
+# Fit arima model
+if(sum(site_target[target_variable]<0,na.rm=T)>0){#If there are any negative values, don't consider transformation
+  fit = forecast::auto.arima(site_target_past[target_variable])
+} else {
+  fit = forecast::auto.arima(site_target_past[target_variable], 
+                             xreg = as.matrix(site_target_past[,c("air_temperature","relative_humidity")]),
+                             #                       lambda = "auto",
+                             max.d = 0, max.D = 0,max.q=0)
+}
+
+lambda = fit$lambda
+boxcox = function(x,lambda){(x^lambda-1)/lambda}
+inv.boxcox = function(x,lambda){
+  ((x * lambda) + 1)^(1 / lambda) - 1
+}
+```
+
+Now, since we want to create an ensemble forecast, we create a function that will do that
+
+```{r}
+
+```
+
+### Machine Learning Model (machine learning)
+
+
 ## Methods of Uncertianty Analysis
+
+### Sources of Uncertainty
+
+The inputs to our models are not perfect values. They contain uncertainty, which can be binned to a number of sources. The main sources we consider are uncertainty from parameters, drivers, initial conditions, random effects, observation error, and process error. Parameter uncertainty arises from lack of knowledge of the true values of model parameters Driver uncertainty, which comes from uncertainty in the true value of the model drivers. In these models, 
 
 ### Validation Analysis
 
+
 ### One-at-a-time Analysis
 
+The one-at-a-time analysis works by incorporating the uncertianty of  
+
 ### Sobol Analysis
+
+The Sobol analysis
