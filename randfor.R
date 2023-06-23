@@ -33,34 +33,16 @@ model_types = c("phenology")
 
 
 #### Step 2: Get NOAA driver data
+forecast_date <- as.Date("2023-05-04")
+noaa_date <- forecast_date - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
 
-forecast_date <- lubridate::date("2023-05-04")
-noaa_date <- lubridate::date("2023-05-04") - lubridate::days(1)  #Need to use yesterday's NOAA forecast because today's is not available yet
+#We're going to get data for all sites relevant to this model, so as to not have to re-load data for the same sites
 site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") %>%
-  filter(field_site_id %in% c("HARV"))|> # can be useful for testing
+  filter(field_site_id %in% c("HARV"))|>
   filter(if_any(matches(model_types),~.==1))
 all_sites = site_data$field_site_id
 
-
-load_stage2 <- function(site, endpoint, variables){
-  message('run ', site)
-  use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage3/parquet/", site)
-  use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
-  parquet_file <- arrow::open_dataset(use_s3) |>
-    dplyr::collect() |>
-    dplyr::filter(datetime >= lubridate::ymd('2017-01-01'),
-                  variable %in% variables)|> #It would be more efficient to filter before collecting, but this is not running on my M1 mac
-    na.omit() |> 
-    mutate(datetime = lubridate::as_date(datetime)) |> 
-    group_by(datetime, site_id, variable) |> 
-    summarize(prediction = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
-    pivot_wider(names_from = variable, values_from = prediction) |> 
-    # convert air temp to C
-    mutate(air_temperature = air_temperature - 273.15)
-}
-
-
-# Specify desired met variables - all meteo
+# specify meteorological variables needed to make predictions
 variables <- c('air_temperature',
                "surface_downwelling_longwave_flux_in_air",
                "surface_downwelling_shortwave_flux_in_air",
@@ -71,6 +53,29 @@ variables <- c('air_temperature',
                "northward_wind",
                "eastward_wind")
 
+# Load stage 2 data
+endpoint = "data.ecoforecast.org"
+use_bucket <- paste0("neon4cast-drivers/noaa/gefs-v12/stage2/parquet/0/", noaa_date)
+use_s3 <- arrow::s3_bucket(use_bucket, endpoint_override = endpoint, anonymous = TRUE)
+noaa_future <- arrow::open_dataset(use_s3) |>
+  dplyr::filter(site_id %in% 'HARV',
+                datetime >= forecast_date,
+                #                reference_datetime == lubridate::as_datetime(forecast_date),
+                variable %in% variables) |>
+  dplyr::collect()
+
+# Format met forecasts
+noaa_future_daily <- noaa_future |> 
+  mutate(datetime = lubridate::as_date(datetime)) |> 
+  # mean daily forecasts at each site per ensemble
+  group_by(datetime, parameter, variable) |> 
+  summarize(prediction = mean(prediction)) |>
+  pivot_wider(names_from = variable, values_from = prediction) |>
+  # convert to Celsius
+  mutate(air_temperature = air_temperature - 273.15) |> 
+  select(datetime, all_of(variables), parameter)
+
+noaa_future_daily$site_id <- "HARV"
 #Code from Freya Olsson to download and format meteorological data (had to be modified to deal with arrow issue on M1 mac). Major thanks to Freya here!!
 
 # Load stage 3 data
@@ -99,11 +104,8 @@ load_stage3 <- function(site, endpoint, variables){
 if(file.exists(here("Forecast_submissions/Generate_forecasts/noaa_downloads/past_allmeteo.csv"))) {
   noaa_past <- read_csv(here("Forecast_submissions/Generate_forecasts/noaa_downloads/past_allmeteo.csv"))
 } else {
-  noaa_past <- map_dfr(all_sites, load_stage2, endpoint, variables)
-  noaa_future <- map_dfr(all_sites, load_stage3, endpoint, variables)
+  noaa_past <- map_dfr(all_sites, load_stage3, endpoint, variables)
 }
-noaa_past$site_id <- 1
-noaa_future$site_id <- 1
 
 ############################################ SET UP TRAINING LOOPS ###################################
 
@@ -134,7 +136,6 @@ train_site <- function(sites, noaa_past, target_variable) {
     
   } else {
     # Tune and fit lasso model - making use of tidymodels
-    
     
     #Recipe for training models
     rec_base <- recipe(site_target)|>
@@ -215,7 +216,6 @@ train_site <- function(sites, noaa_past, target_variable) {
 
 for (theme in model_themes) {
   target = download_target(theme)
-  target$site_id <- 1
   type = ifelse(theme%in% c("terrestrial_30min", "terrestrial_daily"),"terrestrial",theme)
   
   if("siteID" %in% colnames(target)){ #Sometimes the site is called siteID instead of site_id. Fixing here
@@ -231,9 +231,8 @@ for (theme in model_themes) {
     filter(field_site_id %in% c("HARV"))|> # can be useful for testing
     filter(get(type)==1) 
   
-  #sites = site_data$field_site_id
-  sites = 1
-  
+  sites = site_data$field_site_id
+
   #Set target variables for each theme
   if(theme == "aquatics")           {vars = c("temperature","oxygen","chla")}
   if(theme == "phenology")          {vars = c("gcc_90")}
@@ -256,20 +255,17 @@ mod_sums_all <- syms(apropos("_mod_summaries"))|>
   map_dfr(~eval(.)|>bind_rows())|>
   write_csv(here(paste0("trained_models/rf/model_training_summaries-", Sys.Date(),".csv")))
 
-gcc_model <- readRDS("trained_models/rf/phenology-gcc_90-trained-2023-06-22.Rds") |> unbundle()
-#predict(gcc_model$object$fit$fit$object, noaa_future, type = "raw") -> outputs
-#predict(gcc_model$object$fit$fit$object, noaa_future_a[,2:11], type = "conf_int") -> outputs_unc
-#predict(gcc_model$object$fit$fit$object, noaa_future_b, type = "numeric") -> outputs_numeric
+gcc_model <- readRDS("trained_models/rf/phenology-gcc_90-trained-2023-06-23.Rds") |> unbundle()
 
 rec <- prep(extract_preprocessor(gcc_model))
-N_ens <- 50000
-noaa_futures <- noaa_future |>
-  filter(datetime >= noaa_date & datetime <= as.Date("2023-06-21")) |> 
+N_ens <- 1000
+noaa_futures <- noaa_future_daily |>
+  filter(datetime >= noaa_date & datetime <= as.Date("2023-06-07")) |> 
   group_by(datetime) |> 
   group_split()
 
 sobol_time <- tibble(
-  forecast_date = seq.Date(noaa_date, as.Date("2023-06-21"), by = "day"),
+  forecast_date = seq.Date(forecast_date, as.Date("2023-06-07"), by = "day"),
   ensemble = (noaa_futures))
 
 library(future)
@@ -288,7 +284,7 @@ model_test <- function(X, mod = gcc_model$fit$fit$fit) {
 sobol_time_fit <- sobol_time |> 
   mutate(sobol = future_map(noaa_futures, function(x) {
     noaa_future2 <- x |> 
-      select(-datetime, -site_id, -parameter) |> 
+      select(-datetime, -site_id) |> 
       sample_n(N_ens, replace = TRUE)
     
     noaa_future2 <- bake(rec, noaa_future2) |> 
