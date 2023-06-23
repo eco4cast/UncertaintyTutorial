@@ -161,6 +161,11 @@ inv.boxcox = function(x,lambda){
 
 ## not currently generalized to multiple types of arima model
 arima.fx <- function(inputs,drivers,epsilon,horiz=35,lag=1){
+  if("ar1" %in% names(inputs)){
+    rho = inputs[,"ar1"]
+  } else {
+    rho = 0
+  }
   IC = inputs[,"dayof"]
   met.ens = inputs[,"noaa_ensemble_member"]
   sig.ens = inputs[,"sigma.ens"]
@@ -182,10 +187,8 @@ arima.fx <- function(inputs,drivers,epsilon,horiz=35,lag=1){
     met$relative_humidity[is.na(met$relative_humidity)] = mean(met$relative_humidity,na.rm = TRUE)
     #met[,nrow(met)+1] = apply(met,2,mean,na.rm=TRUE)
     
-#    X[,t+1] = unlist(X[,t] + met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
-    X[,t+1] = unlist(met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
-    
-
+   X[,t+1] = unlist(rho*X[,t] + met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
+  
   }
   y = X + param[,"intercept"]#inv.boxcox(X[,-lag],lambda)
   return(y)
