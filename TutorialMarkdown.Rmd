@@ -228,3 +228,78 @@ The one-at-a-time analysis works by incorporating the uncertainty of
 ### Sobol Analysis
 
 The Sobol analysis uses the Sobol Method, where two design matrices are created, and the program "swaps" values from design 1 with design 2 and calculates how these changes affect changes in the model ensemble output. It uses this to calculate how much the variance in the input contributes to the variance, or uncertainty, in the output. Sobol analyses result in set of Sobol Indices. The important Sobol Indices are the Sobol First Order indices and the Sobol Total Order indices. First order indices tell us about the direct contribution of the uncertainty in each input, while total order indices tell us about the total contribution with interactions that each input has.
+
+To perform this on the ARIMA model, we first need to create our design matrices. We need each matrix to capture the uncertainty of each input.
+
+
+```{r}
+library('sensitivity')
+library('mvtnorm')
+
+#Number of design samples
+n <- 100000
+ne <- 100000
+lag = 1
+
+#Design X1 and X2
+par1 <- rmvnorm(n, fit$coef, fit$var.coef)
+par2 <- rmvnorm(n, fit$coef, fit$var.coef)
+
+d1map <- as.matrix(sample(31, n, replace = TRUE))
+colnames(d1map) <- c('noaa_ensemble_member')
+d2map <- as.matrix(sample(31, n, replace = TRUE))
+colnames(d2map) <- c('noaa_ensemble_member')
+
+ICuncert <- forecast(fit, h=0, level=0.68, xreg = as.matrix(site_target_past[, c('air_temperature', 'relative_humidity')]))
+IC.mean = head(ICuncert$mean,n=lag)
+IC.sd   = (head(ICuncert$upper,n=lag) - head(ICuncert$lower,n=lag))/2 
+ic1 <- rmvnorm(n,as.vector(IC.mean),diag(as.vector(IC.sd)^2,nrow = lag))
+colnames(ic1) <- tail(c('lag2', 'lag1', 'dayof'),n = lag)
+ic2 <- rmvnorm(n, as.vector(IC.mean), diag(as.vector(IC.sd)^2, nrow = lag))
+colnames(ic2) <- tail(c('lag2', 'lag1', 'dayof'), n =lag)
+
+sigma.ens1 = data.frame(sigma.ens = 1:ne)
+sigma.ens2 = data.frame(sigma.ens = sample(1:ne,ne,replace=TRUE))
+
+x1 <- data.frame(cbind(par1, d1map, ic1, sigma.ens1))
+x2 <- data.frame(cbind(par2, d2map, ic2, sigma.ens2))
+
+epsilon = rmvnorm(ne,rep(0,horiz+lag),diag(rep(fit$sigma2,horiz+lag)))
+```
+
+Now, we run our Sobol analysis, which gives us estimates of our Sobol first and total order indices.
+
+```{r}
+#Sobol function call
+sobolOuts <- soboljansen(model = arima.fx, X1 = x1, X2 = x2, drivers = noaa_future_daily, horiz = 35, epsilon = epsilon, conf = 0.95)
+```
+
+Now, we clean up our data, since Sobol indices cannot be below 0, but our estimates can end up sightly below zero.
+
+```{r}
+#Clean up negatives (set to 0)
+sobolOuts$S[sobolOuts$S < 0] <- 0
+sobolOuts$T[sobolOuts$T < 0] <- 0
+```
+
+Note that with this function, we get a first and total order index at every time point we predict for, in this case 36 days of predictions. Below is a plot of the first order indices.
+
+```{r}
+plot(sobolOuts$S[1,], type = 'l', ylim = c(0,1.15), lwd = 3, main = 'Sobol First Order Indices',
+     ylab = 'Index', xlab = 'Day')
+for(i in 2:nrow(sobolOuts$S)){lines(sobolOuts$S[i,], ylim = c(0,1.15), col = i, lwd = 3)}
+legend('topright', legend = rownames(sobolOuts$S), col = 1:7, lty=1, lwd=3, cex = 0.4)
+```
+
+As we can see, for most of the prediction, the Sobol first order indices show that sigma.ens, representing process error is the dominant source of uncertainty. The second largest source for much of the time series is the uncertainty in our driver, NOAA weather forecasts. Parameter uncertainty contributes only a small amount to overall uncertainty. Finally, initial condition uncertainty is dominant during our first day of prediction, but quickly decays to being a very minor contributor to overall uncertainty after that.
+
+Now, let's look at the plot of total order indices, which will include the effect of interactions.
+
+```{r}
+plot(sobolOuts$T[1,], type = 'l', ylim = c(0,1.15), lwd = 3, main = 'Sobol Total Order Indices',
+     ylab = 'Index', xlab = 'Day')
+for(i in 2:nrow(sobolOuts$T)){lines(sobolOuts$S[i,], ylim = c(0,1.15), col = i, lwd = 3)}
+legend('topright', legend = rownames(sobolOuts$T), col = 1:7, lty=1, lwd=3, cex = 0.4)
+```
+
+Again, for most of the prediction, the Sobol total order indices show that sigma.ens, representing process error is the dominant source of uncertainty. The second largest source for much of the time series is the uncertainty in our driver, NOAA weather forecasts. Parameter uncertainty in the parameters accounting for the effect of air temperature and relative humidity are very small, while the intercept parameter contributes a small but not negligible amount. Since this behavior appears in the total order index but the first order index is much smaller, we can conclude that most of the effect of the intercept parameter uncertainty on overall uncertainty is due to interactions, not a direct effect. Finally, initial condition uncertainty is dominant during our first day of prediction, but quickly decays to being a very minor contributor to overall uncertainty after that.
