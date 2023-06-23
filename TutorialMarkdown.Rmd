@@ -191,6 +191,70 @@ The inputs to our models are not perfect values. They contain uncertainty, which
 
 ### Validation Analysis
 
+When looking at model uncertainty there is a conceptual distinction between the _predictive uncertainty_ and the _validation uncertainty_. Predictive uncertainty is the result of uncertainty propagation through a model and integrates some or all of the sources of uncertainty discussed above. Validation uncertainty looks at the realized performance of a forecast through some choice of skill score (e.g. RMSE, predictive quantiles, CPRS). Ideally, in a well calibrated forecast the predictive and valdation uncertainties should converge, but this doesn't always happen in practice (e.g. predictive forecast uncertainties may be over- or under-confident) so it is always good to check model performance. In this section we look at the validation uncertainty of the ARIMA forecast.
+
+```{r}
+y1 = arima.fx(x1,drivers,epsilon,horiz=35)
+
+#### Validation uncertainty #### 
+yobs = site_target |>
+  filter(between(datetime,forecast_date,forecast_date+lubridate::days(horiz+1)))
+
+# model time series with CI and data
+ybar = apply(y1,2,quantile,c(0.025,0.5,0.975),na.rm=TRUE)
+
+plot(yobs$datetime,ybar[2,],lwd=3,
+     ylim=range(ybar,na.rm = TRUE),type='l',
+     ylab="gcc90",xlab="date")
+lines(yobs$datetime,ybar[1,],lty=2)
+lines(yobs$datetime,ybar[3,],lty=2)
+points(yobs$datetime,yobs$gcc_90,pch="+",cex=2,col=2)
+```
+Figure V1: Forecast median and 95% CI (black) compared to observations.
+
+```{r}
+# raw error vs lead time
+resid = ybar[2,] - yobs$gcc_90
+plot(yobs$datetime,resid,lwd=3,type='l',
+     ylab="model - data",xlab="date")
+
+```
+Figure V2: Model residual error versus lead time. If we'd run multiple forecasts we would want to average these errors (e.g., RMSE), with lead time rather than date on the x-axis. Unlike traditional models, where we hope that errors are independent and there are no patterns in the residuals, with a forecast we expect the mean validation error to increase with distance / lead time and it is very common for forecast errors to be autocorrelated.
+
+
+```{r}
+# quantile error vs lead time
+yquant = rep(NA,ncol(y1))
+for(t in seq_len(ncol(y1))){
+  yquant[t] = findInterval(yobs$gcc_90[t],vec = sort(y1[,t]))/nrow(y1)
+}
+plot(yobs$datetime,yquant,type = 'l',ylab="Predictive Quantile",xlab="date")
+hist(yquant) ## should be uniform!
+```
+Figure V3: Model error expressed in terms of predictive quantiles. In a well-calibrated model the histogram of model quantiles should be flat (e.g., when we predict something will occur 10% of the time it actually occurs 10% of the time). While a model that had the predictive quantiles unimodally clumped around 0.5 (50%) would clearly be accurate, this would suggest that the predictive uncertainties were under-confident (i.e., that the predictive distribution is wider [more pessimistic] than it needs to be). At the other extreme, a U-shaped histogram would suggest that the model is over-confident -- the predictive distribution is too narrow relative to the realized model performance.
+
+
+```{r}
+# crps vs lead time
+crps = rep(NA,ncol(y1))
+for(t in seq_len(ncol(y1)-1)){
+  crps[t] = scoringRules::crps_sample(yobs$gcc_90[t],dat = y1[,t])
+}
+plot(yobs$datetime,crps,type = 'l',xlab="date")
+```
+Figure V4: Continous Ranked Probability Score (CRPS) versus lead time. Most traditional model performance metrics (RMSE, R^2, correlation, MAE, etc.) are calculated around the _mean_ of the forecast and ignore the distribution of predictions. By contrast, CRPS is a composite score that uses _all_ of the ensemble members in our forecast, accounting for both model accuracy / bias (via a calculation of mean absolute error across ensemble members) and model precision (via a term that accounts for ensemble spread). For a given model error, the CRPS score penalizes for forecasts that are either over- or under-confident.
+
+
+### More complex approaches to assessing model validation uncertainty:
+
+When assessing the performance of a forecast that is running iteratively over time and potentially over many locations, it can be difficult to understand the patterns of forecast error and uncertainty. We recommend using flexible models (e.g. ML, GAMs) to analyze the patterns in forecast uncertainty as a function of forecast distance (e.g., lead time, spatial distance, environmental distance, phylogentic distance) and other relevant factors that may explain the heterogenity in forecast performance (e.g., environmental drivers). For example, the first paper on the EFI NEON Phenology forecast challenge used GAMs to look at forecast error as a smooth function of lead time and day of year, with site and model as additional explainatory variables
+
+```
+fit <- mgcv::gam(crps ~  s(horizon) + s(phenoDate) + siteID + team,
+            data = gcc_forecasts,
+            method="REML")
+summary(fit2)
+```
 
 ### One-at-a-time Analysis
 
