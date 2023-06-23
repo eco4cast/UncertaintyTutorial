@@ -177,7 +177,36 @@ inv.boxcox = function(x,lambda){
 Now, since we want to create an ensemble forecast, we create a function that will do that
 
 ```{r}
+arima.fx <- function(inputs,drivers,epsilon,horiz=35,lag=1){
+  IC = inputs[,"dayof"]
+  met.ens = inputs[,"noaa_ensemble_member"]
+  sig.ens = inputs[,"sigma.ens"]
+  param   = inputs[,1:3]
+  betas = param[,which(colnames(param) %in% variables)]
+  if(is.null(dim(IC))) IC = as.matrix(IC,ncol=1)
+  IC.bc = IC - param[,"intercept"] #boxcox(IC,lambda)
+  X = matrix(NA,nrow=nrow(IC),ncol=horiz+lag+1)
+  X[,seq_len(lag)] = IC.bc
+  dates = sort(unique(drivers$datetime))
+  for(t in lag + (0:horiz)){
+    met = drivers |>
+      filter(datetime == dates[t]) |>
+      ungroup() |>
+      select(air_temperature,relative_humidity)
+    met = met[met.ens,]
+    ## gap filling
+    met$air_temperature[is.na(met$air_temperature)]     = mean(met$air_temperature,na.rm = TRUE)
+    met$relative_humidity[is.na(met$relative_humidity)] = mean(met$relative_humidity,na.rm = TRUE)
+    #met[,nrow(met)+1] = apply(met,2,mean,na.rm=TRUE)
+    
+#    X[,t+1] = unlist(X[,t] + met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
+    X[,t+1] = unlist(met[,1] * betas[,1] + met[,2]*betas[,2] + epsilon[sig.ens,t] )
+    
 
+  }
+  y = X + param[,"intercept"]#inv.boxcox(X[,-lag],lambda)
+  return(y)
+}
 ```
 
 ### Machine Learning Model (machine learning)
@@ -187,15 +216,15 @@ Now, since we want to create an ensemble forecast, we create a function that wil
 
 ### Sources of Uncertainty
 
-The inputs to our models are not perfect values. They contain uncertainty, which can be binned to a number of sources. The main sources we consider are uncertainty from parameters, drivers, initial conditions, random effects, observation error, and process error. Parameter uncertainty arises from lack of knowledge of the true values of model parameters Driver uncertainty, which comes from uncertainty in the true value of the model drivers. In these models, 
+The inputs to our models are not perfect values. They contain uncertainty, which can be binned to a number of sources. The main sources we consider are uncertainty from parameters, drivers, initial conditions, random effects, observation error, and process error.
 
 ### Validation Analysis
 
 
 ### One-at-a-time Analysis
 
-The one-at-a-time analysis works by incorporating the uncertianty of  
+The one-at-a-time analysis works by incorporating the uncertainty of  
 
 ### Sobol Analysis
 
-The Sobol analysis
+The Sobol analysis uses the Sobol Method, where two design matrices are created, and the program "swaps" values from design 1 with design 2 and calculates how these changes affect changes in the model ensemble output. It uses this to calculate how much the variance in the input contributes to the variance, or uncertainty, in the output. Sobol analyses result in set of Sobol Indices. The important Sobol Indices are the Sobol First Order indices and the Sobol Total Order indices. First order indices tell us about the direct contribution of the uncertainty in each input, while total order indices tell us about the total contribution with interactions that each input has.
