@@ -6,6 +6,8 @@ date: "2023-06-22"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+#library(remotes)
+#remotes::install_github("https://github.com/eco4cast/neon4cast")
 library(tidyverse)
 library(neon4cast)
 library(lubridate)
