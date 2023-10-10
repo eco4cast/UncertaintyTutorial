@@ -179,11 +179,12 @@ inv.boxcox = function(x,lambda){
 Now, since we want to create an ensemble forecast, we create a function that will do that
 
 ```{r}
-arima.fx <- function(inputs,drivers,epsilon,horiz=35,lag=1){
+arima.fx <- function(inputs,drivers,epsilon,
+                     horiz=35,lag=1,param.names = names(fit$coef)){
   IC = inputs[,"dayof"]
   met.ens = inputs[,"noaa_ensemble_member"]
   sig.ens = inputs[,"sigma.ens"]
-  param   = inputs[,1:3]
+  param   = inputs[,param.names]
   betas = param[,which(colnames(param) %in% variables)]
   if(is.null(dim(IC))) IC = as.matrix(IC,ncol=1)
   IC.bc = IC - param[,"intercept"] #boxcox(IC,lambda)
@@ -219,6 +220,49 @@ arima.fx <- function(inputs,drivers,epsilon,horiz=35,lag=1){
 ### Sources of Uncertainty
 
 The inputs to our models are not perfect values. They contain uncertainty, which can be binned to a number of sources. The main sources we consider are uncertainty from parameters, drivers, initial conditions, random effects, observation error, and process error.
+
+To propagate and analyze these uncertainties, we first need to create design matrices that sample from each of these inputs. In the code below we create two such samples, x1 and x2. We will use the first immediately to generate an enemble forecast, and then will use both together later in a Sobol analysis, which will help us partition out the different sources of uncertainty.
+
+
+```{r}
+library('sensitivity')
+library('mvtnorm')
+
+#Number of design samples
+n <- 100000
+ne <- 100000
+lag = 1
+
+#Design X1 and X2
+par1 <- rmvnorm(n, fit$coef, fit$var.coef)
+par2 <- rmvnorm(n, fit$coef, fit$var.coef)
+
+## sample drivers by sampling their ensemble member numbers
+d1map <- as.matrix(sample(31, n, replace = TRUE))
+colnames(d1map) <- c('noaa_ensemble_member')
+d2map <- as.matrix(sample(31, n, replace = TRUE))
+colnames(d2map) <- c('noaa_ensemble_member')
+
+## sample initial conditions
+ICuncert <- forecast(fit, h=0, level=0.68, xreg = as.matrix(site_target_past[, c('air_temperature', 'relative_humidity')]))
+IC.mean = head(ICuncert$mean,n=lag)
+IC.sd   = (head(ICuncert$upper,n=lag) - head(ICuncert$lower,n=lag))/2 
+ic1 <- rmvnorm(n,as.vector(IC.mean),diag(as.vector(IC.sd)^2,nrow = lag))
+colnames(ic1) <- tail(c('lag2', 'lag1', 'dayof'),n = lag)
+ic2 <- rmvnorm(n, as.vector(IC.mean), diag(as.vector(IC.sd)^2, nrow = lag))
+colnames(ic2) <- tail(c('lag2', 'lag1', 'dayof'), n =lag)
+
+## sample process error by sampling row numbers from a matrix of Normal random numbers. This approach is specifically to support the Sobol analyses, otherwise one could simply have used `epsilon` directly
+epsilon = rmvnorm(ne,rep(0,horiz+lag),diag(rep(fit$sigma2,horiz+lag)))  ## here our SIGMA matrix is diagonal, but using rmvnorm to show how this could be generalized to autocorrelated errors
+sigma.ens1 = data.frame(sigma.ens = 1:ne)
+sigma.ens2 = data.frame(sigma.ens = sample(1:ne,ne,replace=TRUE))
+
+## combine samples together into overall input matrix
+x1 <- data.frame(cbind(par1, d1map, ic1, sigma.ens1))
+x2 <- data.frame(cbind(par2, d2map, ic2, sigma.ens2))
+```
+
+
 
 ### Validation Analysis
 
@@ -280,11 +324,18 @@ Figure V4: Continous Ranked Probability Score (CRPS) versus lead time. Most trad
 
 When assessing the performance of a forecast that is running iteratively over time and potentially over many locations, it can be difficult to understand the patterns of forecast error and uncertainty. We recommend using flexible models (e.g. ML, GAMs) to analyze the patterns in forecast uncertainty as a function of forecast distance (e.g., lead time, spatial distance, environmental distance, phylogentic distance) and other relevant factors that may explain the heterogenity in forecast performance (e.g., environmental drivers). For example, the first paper on the EFI NEON Phenology forecast challenge used GAMs to look at forecast error as a smooth function of lead time and day of year, with site and model as additional explainatory variables
 
-```
-fit <- mgcv::gam(crps ~  s(horizon) + s(phenoDate) + siteID + team,
-            data = gcc_forecasts,
+```{r}
+horizon = 0:36 ## when averaging over multiple forecasts, will come from dataframe
+crps.fit = data.frame(crps = crps, horizon = horizon) 
+fit2 <- mgcv::gam(crps ~  s(horizon),
+              data = crps.fit,
             method="REML")
 summary(fit2)
+
+hnew <- 0:35
+crps_smooth <- predict(fit2)
+plot(hnew,crps_smooth,xlab="Lead Time",ylab="predicted CRPS",
+     type='l',lwd=1,lty=2)
 ```
 
 ### One-at-a-time Analysis
@@ -295,45 +346,7 @@ The one-at-a-time analysis works by incorporating the uncertainty of
 
 The Sobol analysis uses the Sobol Method, where two design matrices are created, and the program "swaps" values from design 1 with design 2 and calculates how these changes affect changes in the model ensemble output. It uses this to calculate how much the variance in the input contributes to the variance, or uncertainty, in the output. Sobol analyses result in set of Sobol Indices. The important Sobol Indices are the Sobol First Order indices and the Sobol Total Order indices. First order indices tell us about the direct contribution of the uncertainty in each input, while total order indices tell us about the total contribution with interactions that each input has.
 
-To perform this on the ARIMA model, we first need to create our design matrices. We need each matrix to capture the uncertainty of each input.
-
-
-```{r}
-library('sensitivity')
-library('mvtnorm')
-
-#Number of design samples
-n <- 100000
-ne <- 100000
-lag = 1
-
-#Design X1 and X2
-par1 <- rmvnorm(n, fit$coef, fit$var.coef)
-par2 <- rmvnorm(n, fit$coef, fit$var.coef)
-
-d1map <- as.matrix(sample(31, n, replace = TRUE))
-colnames(d1map) <- c('noaa_ensemble_member')
-d2map <- as.matrix(sample(31, n, replace = TRUE))
-colnames(d2map) <- c('noaa_ensemble_member')
-
-ICuncert <- forecast(fit, h=0, level=0.68, xreg = as.matrix(site_target_past[, c('air_temperature', 'relative_humidity')]))
-IC.mean = head(ICuncert$mean,n=lag)
-IC.sd   = (head(ICuncert$upper,n=lag) - head(ICuncert$lower,n=lag))/2 
-ic1 <- rmvnorm(n,as.vector(IC.mean),diag(as.vector(IC.sd)^2,nrow = lag))
-colnames(ic1) <- tail(c('lag2', 'lag1', 'dayof'),n = lag)
-ic2 <- rmvnorm(n, as.vector(IC.mean), diag(as.vector(IC.sd)^2, nrow = lag))
-colnames(ic2) <- tail(c('lag2', 'lag1', 'dayof'), n =lag)
-
-sigma.ens1 = data.frame(sigma.ens = 1:ne)
-sigma.ens2 = data.frame(sigma.ens = sample(1:ne,ne,replace=TRUE))
-
-x1 <- data.frame(cbind(par1, d1map, ic1, sigma.ens1))
-x2 <- data.frame(cbind(par2, d2map, ic2, sigma.ens2))
-
-epsilon = rmvnorm(ne,rep(0,horiz+lag),diag(rep(fit$sigma2,horiz+lag)))
-```
-
-Now, we run our Sobol analysis, which gives us estimates of our Sobol first and total order indices.
+This analysis makes use of the two different ensemble of inputs, x1 and x2, we defined earlier. With those in place we can run our Sobol analysis, which gives us estimates of our Sobol first and total order indices.
 
 ```{r}
 #Sobol function call
