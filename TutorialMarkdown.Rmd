@@ -20,6 +20,19 @@ library(forecast)
 library(here)
 library(sensitivity)
 library(mvtnorm)
+
+library(ranger) #needed for random forest implementation
+library(doParallel)
+library(tidymodels)
+library(vip)
+library(butcher)
+library(bundle)
+library(neon4cast)
+library(lubridate)
+library(decor)
+
+
+Nproc <- 8
 ```
 
 # Forecast Uncertainty Tutorial: Using a forecast of Phenology as an example
@@ -212,8 +225,95 @@ arima.fx <- function(inputs,drivers,epsilon,
 }
 ```
 
-### Machine Learning Model (machine learning)
+### Machine Learning Model (Random Forest)
 
+```{r}
+
+site_target_past_rf <- site_target_past[!is.na(site_target_past$gcc_90), ]
+site_target_past_rf <- site_target_past_rf |> select(-datetime, -site_id)
+
+train_site <- function(sites, site_target_past, target_variable) {
+  message(paste0("Running ",target_variable," at all sites"))
+  
+  if(!target_variable%in%names(site_target_past)){
+    message(paste0("No target observations at site ",site,". Skipping forecasts at this site."))
+    return()
+    
+  } else if(sum(!is.na(site_target_past$air_temperature)&!is.na(site_target_past[target_variable]))==0){
+    message(paste0("No historical air temp data that corresponds with target observations at site ",site,". Skipping forecasts at this site."))
+    return()
+    
+  } else {
+    # Tune and fit lasso model - making use of tidymodels
+    
+    #Recipe for training models
+    rec_base <- recipe(site_target_past)|>
+      #step_rm(c("datetime", "site_id", "parameter"))|>
+      update_role(everything(), new_role = "predictor")|>
+      update_role({{target_variable}}, new_role = "outcome")|>
+      #step_dummy(site_id)|> #Random forest handles categorical predictor without need to convert to dummy 
+      step_normalize(all_numeric(), -all_outcomes())
+    
+    ## Set up tuning and fitting engine
+    tune_randfor <- rand_forest(
+      mtry = tune(),
+      trees = 500,
+      min_n = tune()) |>
+      set_mode("regression") %>%
+      set_engine("ranger", importance = "impurity", keep.inbag = TRUE, write.forest = TRUE) 
+    
+    #k-fold cross-validation
+    randfor_resamp <- vfold_cv(site_target_past, v = 10, repeats = 5)# define k-fold cross validation procedure 
+    ## Assemble workflow and tune
+    wf <- workflow() %>%
+      add_recipe(rec_base)
+    
+    #Tune models
+    #If running in parallel  
+    library(doParallel)
+    cl <- makePSOCKcluster(Nproc) #SET 
+    registerDoParallel(cl) 
+    randfor_grid <- 
+      tune_grid(
+        wf %>% add_model(tune_randfor),
+        resamples = randfor_resamp,
+        grid = 20 
+      )
+    
+    ## Select best model via RMSE
+    best_mod<-randfor_grid|>
+      select_best("rmse")
+    
+    #select model with best tuning parameter by RMSE, cross-validation approach
+    final_mod <- finalize_workflow(
+      wf %>% add_model(tune_randfor),
+      best_mod
+    )
+    
+    final_fit <- fit(final_mod, site_target_past)
+    
+    vip <- final_fit|>extract_fit_parsnip()|>vip()|>pluck("data")|>
+      pivot_wider(names_from = "Variable", values_from = "Importance", names_prefix = "importance_")
+    
+    final_preds <- predict(final_fit, site_target_past)|>
+      bind_cols(site_target_past)
+    
+    final_rmse<-rmse(final_preds, estimate = .pred, truth = {{target_variable}})
+    #try to extract fit and write to tibble variable importance as columns bind_cols
+    
+    #save model fit in minimal form
+    res_bundle <-
+      final_fit %>%            
+      bundle()
+    
+    return(res_bundle)
+    
+  }
+}
+
+rf_gcc_model <- train_site(site = site, target_variable = target_variable, site_target_past = site_target_past_rf)
+
+```
 
 ## Methods of Uncertianty Analysis
 
@@ -221,7 +321,7 @@ arima.fx <- function(inputs,drivers,epsilon,
 
 The inputs to our models are not perfect values. They contain uncertainty, which can be binned to a number of sources. The main sources we consider are uncertainty from parameters, drivers, initial conditions, random effects, observation error, and process error.
 
-To propagate and analyze these uncertainties, we first need to create design matrices that sample from each of these inputs. In the code below we create two such samples, x1 and x2. We will use the first immediately to generate an enemble forecast, and then will use both together later in a Sobol analysis, which will help us partition out the different sources of uncertainty.
+To propagate and analyze these uncertainties, we first need to create design matrices that sample from each of these inputs. In the code below we create two such samples, x1 and x2. We will use the first immediately to generate an ensemble forecast, and then will use both together later in a Sobol analysis, which will help us partition out the different sources of uncertainty.
 
 
 ```{r}
@@ -382,3 +482,72 @@ legend('topright', legend = rownames(sobolOuts$T), col = 1:7, lty=1, lwd=3, cex 
 ```
 
 Again, for most of the prediction, the Sobol total order indices show that sigma.ens, representing process error is the dominant source of uncertainty. The second largest source for much of the time series is the uncertainty in our driver, NOAA weather forecasts. Parameter uncertainty in the parameters accounting for the effect of air temperature and relative humidity are very small, while the intercept parameter contributes a small but not negligible amount. Since this behavior appears in the total order index but the first order index is much smaller, we can conclude that most of the effect of the intercept parameter uncertainty on overall uncertainty is due to interactions, not a direct effect. Finally, initial condition uncertainty is dominant during our first day of prediction, but quickly decays to being a very minor contributor to overall uncertainty after that.
+
+
+
+### Sobol Analysis Machine Learning Model
+
+```{r}
+
+rec <- prep(extract_preprocessor(rf_gcc_model |> unbundle()))
+N_ens <- 1000
+noaa_futures <- noaa_future_daily |>
+  filter(datetime >= noaa_date & datetime <= as.Date("2023-06-07")) |> 
+  group_by(datetime) |> 
+  group_split()
+
+sobol_time <- tibble(
+  forecast_date = seq.Date(forecast_date, as.Date("2023-06-07"), by = "day"),
+  ensemble = (noaa_futures))
+
+library(future)
+library(furrr)
+library(future.callr)
+plan(callr, workers = Nproc)
+
+
+source("R/predict_rf_ensemble.R")
+model_test <- function(X, mod = rf_gcc_model$object$fit$fit$object$fit) {
+  y <- predict_tidy_ensemble(mod, X)
+  #  y <- y$.pred
+  y
+}
+
+sobol_time_fit <- sobol_time |> 
+  mutate(sobol = future_map(noaa_futures, function(x) {
+    noaa_future2 <- x |> 
+      select(-datetime) |> 
+      sample_n(N_ens, replace = TRUE)
+    
+    noaa_future2 <- bake(rec, noaa_future2) |> 
+      mutate(parameter_seed = sample.int(n()))
+    
+    noaa_future_a <- noaa_future2 |>
+      filter(parameter_seed %in% 1:round(N_ens/2))
+    noaa_future_b <- noaa_future2 |>
+      filter(parameter_seed %in% round(N_ens/2 + 1):N_ens) 
+    
+    for(i in seq_len(ncol(noaa_future_b))) {
+      noaa_future_b[[i]] <- sample(noaa_future_b[[i]], length(noaa_future_b[[i]]), replace = FALSE)
+    }
+    
+    s2 <- soboljansen(model = model_test, X1 = noaa_future_a, X2 = noaa_future_b, nboot = 0, conf = 0.95)
+    
+    return(s2)
+    
+  }))
+
+
+sobol_time_fit_data <- sobol_time_fit |> 
+  mutate(T = map(sobol, function(x) {
+    x$T |> rownames_to_column(var = "variable")
+  })) |> 
+  select(forecast_date, T) |> 
+  unnest(T) |> 
+  mutate(variable = fct_recode(variable, tree_uncertainty = "parameter_seed")) |> 
+  mutate(variable = fct_relevel(variable, "tree_uncertainty", after = Inf))
+
+ggplot(sobol_time_fit_data, aes(x = forecast_date, fill = variable, y = original)) +
+  geom_area()
+
+```
